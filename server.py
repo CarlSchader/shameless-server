@@ -1,4 +1,5 @@
-from uuid import UUID, uuid4
+from typing import Any
+from uuid import uuid4
 import time
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Request
@@ -10,13 +11,18 @@ import ndjson
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger()
 
-LOG_FILE_PATH = os.getenv('LOG_FILE_PATH', './log.ndjson')
+LOG_FILE_PATH = os.getenv('LOG_FILE_PATH', './logs/log.ndjson')
 
+if not os.path.isfile(LOG_FILE_PATH):
+    logger.info(f"log file doesn't exist: {LOG_FILE_PATH}")
+    logger.info(f"creating log file: {LOG_FILE_PATH}")
+    with open(LOG_FILE_PATH, 'w'):
+        pass
 
 class Log(BaseModel):
-    id: UUID = uuid4()
+    id: str = str(uuid4())
     timestamp: float = time.time() 
-    text: str | None = None
+    payload: dict = {} 
 
 
 app = FastAPI()
