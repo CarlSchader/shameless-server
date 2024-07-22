@@ -1,5 +1,5 @@
 from uuid import UUID, uuid4
-from datetime import datetime
+import time
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Request
 import os
@@ -15,11 +15,12 @@ LOG_FILE_PATH = os.getenv('LOG_FILE_PATH', './log.ndjson')
 
 class Log(BaseModel):
     id: UUID = uuid4()
-    date: datetime = datetime.now()
-    text: str | None
+    timestamp: float = time.time() 
+    text: str | None = None
 
 
 app = FastAPI()
+
 
 @app.get("/")
 def read_root(req: Request) -> str:
@@ -42,22 +43,17 @@ def write_log(log: Log) -> None:
         raise HTTPException(500)
 
 
-class GetLogsRequest(BaseModel):
-    limit: int = 0
-    offset: int = 0
-
-
 @app.get("/logs")
-def read_log(req: GetLogsRequest) -> list[Log]:
+def read_log(limit: int = 100, offset: int = 0) -> list[Log]:
     res: list[Log] = []
     try:
         with open(LOG_FILE_PATH) as f:
             reader = ndjson.reader(f)
             i = 0
             for row in reader:
-                if i < req.offset:
+                if i < offset:
                     continue
-                elif i >= req.limit:
+                elif i >= limit:
                     break
                 else:
                     res.append(Log.model_validate_json(row))
@@ -65,4 +61,5 @@ def read_log(req: GetLogsRequest) -> list[Log]:
         logger.error(e)
         raise HTTPException(500)
 
+    logger.info(res)
     return res
