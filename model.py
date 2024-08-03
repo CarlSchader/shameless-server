@@ -1,0 +1,1 @@
+EncryptedLog = tuple[int, bytes]

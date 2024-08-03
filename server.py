@@ -1,71 +1,92 @@
-from typing import Any
-from uuid import uuid4
-import time
+from fastapi import FastAPI, HTTPException, UploadFile, File
+
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, Request
-import os
-import sys
-import logging
-import ndjson
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-logger = logging.getLogger()
+from log_cache import cache_sorted_encrypted_logs, get_cached_encrypted_logs
+from model import EncryptedLog
 
-LOG_FILE_PATH = os.getenv('LOG_FILE_PATH', './logs/log.ndjson')
-
-if not os.path.isfile(LOG_FILE_PATH):
-    logger.info(f"log file doesn't exist: {LOG_FILE_PATH}")
-    logger.info(f"creating log file: {LOG_FILE_PATH}")
-    with open(LOG_FILE_PATH, 'w'):
-        pass
-
-class Log(BaseModel):
-    id: str = str(uuid4())
-    timestamp: float = time.time() 
-    payload: dict = {} 
-
+MAX_LOG_INPUT_FILE_SIZE: int = 1028 * 1028 * 1
 
 app = FastAPI()
 
-
 @app.get("/")
-def read_root(req: Request) -> str:
-    ip = ""
-    if req.client:
-        ip = req.client.host
-    logger.info(f"healthcheck from {ip}")
+def read_root() -> str:
     return "healthy"
 
-
-@app.post("/log")
-def write_log(log: Log) -> None:
-    logger.debug(f"POST /log {log}")
-    try:
-        with open(LOG_FILE_PATH, 'w') as f:
-            writer = ndjson.writer(f)
-            writer.writerow(log.model_dump_json())
-    except Exception as e:
-        logger.error(e)
-        raise HTTPException(500)
-
+@app.get("/health")
+def health_check() -> str:
+    return "healthy"
 
 @app.get("/logs")
-def read_log(limit: int = 100, offset: int = 0) -> list[Log]:
-    res: list[Log] = []
-    try:
-        with open(LOG_FILE_PATH) as f:
-            reader = ndjson.reader(f)
-            i = 0
-            for row in reader:
-                if i < offset:
-                    continue
-                elif i >= limit:
-                    break
-                else:
-                    res.append(Log.model_validate_json(row))
-    except Exception as e:
-        logger.error(e)
-        raise HTTPException(500)
+def read_logs(user_id: str, limit: int = 256, offset: int = 0) -> list[EncryptedLog]:
+    return get_cached_encrypted_logs(cache_key=user_id, limit=limit, offset=offset)
 
-    logger.info(res)
-    return res
+class LogsPostRequest(BaseModel):
+    user_id: str
+    encrypted_logs: list[EncryptedLog] = []
+
+@app.post("/logs")
+def write_logs(req: LogsPostRequest):
+    cache_sorted_encrypted_logs(cache_key=req.user_id, encrypted_logs=req.encrypted_logs)
+    
+@app.post("/log-file")
+async def ingest_log_file(user_id: str, file: UploadFile = File(...)):
+    if file.content_type != "text/plain":
+        raise HTTPException(400, "file content type must be text/plain")
+
+    if file.size == None:
+        raise HTTPException(400, "file size not readable")
+
+    if file.size > MAX_LOG_INPUT_FILE_SIZE:
+        raise HTTPException(400, f"file greater than maximum size: {MAX_LOG_INPUT_FILE_SIZE}")
+
+    lines = (await file.read()).decode('utf-8').strip().split('\n')
+    
+    if not lines[0].isdigit():
+        raise HTTPException(400, "start date must be integer")
+    
+    start_date = int(lines[0])
+    if start_date < 0:
+        raise HTTPException(400, "start date must be positive") 
+
+    if not lines[1].isdigit():
+        raise HTTPException(400, "end date must be integer")
+
+    end_date = int(lines[1])
+    if end_date < 1:
+        raise HTTPException(400, "end date must be positive")
+
+    if not lines[2].isdigit():
+        raise HTTPException(400, "log count must be integer")
+
+    log_count = int(lines[2])
+    if log_count < 2:
+        raise HTTPException(400, "log count must be positive")
+
+    log_lines = lines[3:]
+    if log_count != len(log_lines):
+        raise HTTPException(400, "log count does not match the number of logs in the file")
+
+    new_logs: list[EncryptedLog] = []
+    i = 0
+    for line in log_lines:
+        splits = line.split(' ')
+        if len(splits) != 2:
+            raise HTTPException(400, f"log number {i}: {line} -- has incorrect number ({2}) of words")
+
+        timestamp_string = splits[0]
+        encrypted_payload = splits[1]
+
+        if not timestamp_string.isdigit():
+            raise HTTPException(400, f"log number {i}: {line} -- has non-integer timestamp")
+
+        timestamp = int(timestamp_string)
+        if timestamp < 0:
+            raise HTTPException(400, f"log number {i}: {line} -- has negative timestamp")
+
+        encrypted_bytes = encrypted_payload.encode('utf-8')
+        new_logs.append((timestamp, encrypted_bytes))
+
+    new_logs.sort(key=lambda l: l[0])
+    cache_sorted_encrypted_logs(user_id, new_logs)
+
