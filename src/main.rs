@@ -12,11 +12,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
-    let database_url = std::env::var("DATABASE_URL")?;
+    let database_url = std::env::var("DATABASE_URL").unwrap();
 
     let pool = PgPoolOptions::new()
         .max_connections(30)
-        .connect(database_url.as_str()).await?;
+        .connect(database_url.as_str()).await.unwrap();
 
     let shared_state = Arc::new(AppState { 
         db_pool: pool,
