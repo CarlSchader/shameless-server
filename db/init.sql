@@ -2,6 +2,8 @@ CREATE EXTENSION timescaledb;
 
 CREATE TABLE logs (
   owner_id TEXT NOT NULL,
-  ts TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-  payload BYTA NOT NULL,
+  ts TIMESTAMPTZ NOT NULL,
+  payload BYTEA NOT NULL
 );
+
+SELECT create_hypertable('logs', 'ts');
