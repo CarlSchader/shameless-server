@@ -10,7 +10,7 @@ use base64::{prelude::BASE64_STANDARD, Engine};
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonLog {
     time: i64,
-    payload: String, // base64 encoded string
+    payload: String, 
 }
 
 #[derive(sqlx::FromRow)]
@@ -77,11 +77,11 @@ async fn post_logs_handler(State(state): State<Arc<AppState>>, Query(params): Qu
     for log in logs {
         let payload = match BASE64_STANDARD.decode(log.payload) {
             Ok(payload) => payload,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
+            Err(e) => return Err(format!("{e}")),
         };
 
         logs_timestamps.push(log.time);
-        logs_payloads.push(payload);
+        logs_payloads.push();
     }
 
     if let Err(e) = sqlx::query!(
