@@ -6,7 +6,7 @@ CREATE TABLE logs (
   payload BYTEA NOT NULL
 );
 
-SELECT create_hypertable('logs', by_range('time'));
+SELECT create_hypertable('logs', 'time');
 
 CREATE INDEX ix_owner_id_time ON logs (owner_id, time DESC);
 

@@ -3,7 +3,7 @@ use axum::{
 };
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 
 use base64::{prelude::BASE64_STANDARD, Engine};
 
@@ -50,10 +50,27 @@ async fn main() {
 #[derive(Deserialize, Debug)]
 struct GetLogsParams {
     user_id: String,
+    from: Option<i64>, // timestamp to retrieve 
 }
 
+const DAY_IN_NANO_SECONDS: i64 = 1000 * 1000 * 60 * 60 * 24;
+
 async fn get_logs_handler(State(state): State<Arc<AppState>>, Query(params): Query<GetLogsParams>) -> Result<Json<Vec<JsonLog>>, String> {
-    match sqlx::query_as::<_, SqlLog>("SELECT time, payload FROM logs WHERE owner_id = $1;").bind(params.user_id)
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(n) => n,
+        Err(e) => return Err(format!("{e}")),
+    };
+
+    let mut from_time: i64 = (now.as_nanos() as i64) - DAY_IN_NANO_SECONDS;
+    if let Some(from) = params.from {
+        from_time = from;
+    }
+
+    match sqlx::query_as::<_, SqlLog>(
+        "SELECT time, payload FROM logs WHERE owner_id = $1 AND time >= $2 ORDER BY time DESC;"
+    )
+    .bind(params.user_id)
+    .bind(from_time)
     .fetch_all(&state.db_pool).await {
         Ok(rows) => return Ok(Json(rows.iter().map(|row| JsonLog {
             time: row.time,
