@@ -27,7 +27,7 @@ header=$(
 	'
 	($time_str | tonumber) as $time_num
 	| .iat=$time_num
-	| .exp=($time_num + 1)
+	| .exp=($time_num + 864000)
 	'
 )
 payload='{
