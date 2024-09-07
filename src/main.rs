@@ -1,9 +1,14 @@
 use axum::{
-    extract::{Query, Request, State}, http::{header, StatusCode}, middleware::{self, Next}, response::Response, routing::{get, post}, Extension, Json, Router
+    extract::{Query, Request, State},
+    http::{header, StatusCode},
+    middleware::{self, Next},
+    response::Response,
+    routing::{get, post},
+    Extension, Json, Router,
 };
 use hmac::{Hmac, Mac};
 use jwt::{Header, Token, VerifyWithKey};
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
@@ -56,7 +61,10 @@ async fn main() {
     let apiv1_routes = Router::new()
         .route("/logs", get(get_logs_handler))
         .route("/logs", post(post_logs_handler))
-        .route_layer(middleware::from_fn_with_state(shared_state.clone(), auth_middleware))
+        .route_layer(middleware::from_fn_with_state(
+            shared_state.clone(),
+            auth_middleware,
+        ))
         .with_state(shared_state);
 
     let app = Router::new()
@@ -82,21 +90,31 @@ async fn auth_middleware(
     let auth_header = match req.headers().get(header::AUTHORIZATION) {
         Some(header) => header,
         None => {
-            info!("no auth header given");
+            warn!("no auth header given");
             return Err(StatusCode::UNAUTHORIZED);
         }
     };
 
-    let Ok(jwt_string) = auth_header.to_str() else {
+    let Ok(header_string) = auth_header.to_str() else {
         error!("unable to convert auth header to string: {:?}", auth_header);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
+
+    if &header_string[0..7].to_lowercase() != "bearer " {
+        warn!("invalid auth type, must be bearer");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let jwt_string = &header_string[7..];
 
     // auth user
     let token: Token<Header, BTreeMap<String, String>, _> =
         match jwt_string.verify_with_key(&state.auth_secret_key) {
             Ok(token) => token,
-            Err(_) => return Err(StatusCode::UNAUTHORIZED),
+            Err(e) => {
+                error!("error verifying auth token: {:?}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
         };
 
     let _headers = token.header();
@@ -156,7 +174,6 @@ async fn get_logs_handler(
         Err(e) => return Err(format!("{e}")),
     }
 }
-
 
 async fn post_logs_handler(
     State(state): State<Arc<AppState>>,
