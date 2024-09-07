@@ -195,12 +195,12 @@ async fn post_logs_handler(
         logs_payloads.push(payload);
     }
 
-    if let Err(e) = sqlx::query!(
+    if let Err(e) = sqlx::query(
         "INSERT INTO logs(owner_id, time, payload) SELECT * FROM UNNEST($1::text[], $2::bigint[], $3::bytea[])",
-        &log_owner_ids[..], 
-        &logs_timestamps[..], 
-        &logs_payloads[..]
     )
+    .bind(&log_owner_ids[..])
+    .bind(&logs_timestamps[..])
+    .bind(&logs_payloads[..])
     .execute(&state.db_pool).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")); 
     };
