@@ -6,12 +6,14 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
+
 use hmac::{Hmac, Mac};
 use jwt::{Header, Token, VerifyWithKey};
-use log::{error, info, warn};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -19,6 +21,16 @@ use std::{
 };
 
 use base64::{prelude::BASE64_STANDARD, Engine};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct JsonError {
+    error: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct JsonMessage {
+    message: String,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonLog {
@@ -68,8 +80,8 @@ async fn main() {
         .with_state(shared_state);
 
     let app = Router::new()
-        .route("/", get(|| async { "healthy" }))
-        .route("/health", get(|| async { "healthy" }))
+        .route("/", get(|| async { Json(JsonMessage { message: "healthy".to_string() }) }))
+        .route("/health", get(|| async { Json(JsonMessage { message: "healthy".to_string() }) }))
         .nest("/api/v1", apiv1_routes);
 
     info!("server listening on 0.0.0.0:8000");
@@ -86,23 +98,31 @@ async fn auth_middleware(
     state: State<Arc<AppState>>,
     mut req: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, (StatusCode, Json<JsonError>)> {
     let auth_header = match req.headers().get(header::AUTHORIZATION) {
         Some(header) => header,
         None => {
-            warn!("no auth header given");
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err((
+                StatusCode::UNAUTHORIZED, 
+                Json(JsonError { error: "no auth header given".to_string() })
+            ));
         }
     };
 
     let Ok(header_string) = auth_header.to_str() else {
-        error!("unable to convert auth header to string: {:?}", auth_header);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        let error_string = format!("unable to convert auth header to string: {:?}", auth_header);
+        error!("{error_string}");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR, 
+            Json(JsonError { error: error_string })
+        ));
     };
 
     if &header_string[0..7].to_lowercase() != "bearer " {
-        warn!("invalid auth type, must be bearer");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(JsonError { error: "invalid auth type, must be bearer".to_string() })
+        ));
     }
 
     let jwt_string = &header_string[7..];
@@ -112,8 +132,11 @@ async fn auth_middleware(
         match jwt_string.verify_with_key(&state.auth_secret_key) {
             Ok(token) => token,
             Err(e) => {
-                error!("error verifying auth token: {:?}", e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                let error_string = format!("unable to verify auth token {}: {:?}", jwt_string, e);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(JsonError { error: error_string })
+                ));
             }
         };
 
@@ -121,8 +144,10 @@ async fn auth_middleware(
     let claims = token.claims();
 
     let Some(id) = claims.get("sub") else {
-        error!("no sub claim");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(JsonError { error: "no sub claim in jwt".to_string() })
+        ));
     };
 
     let user = User { id: id.to_string() };
@@ -142,10 +167,14 @@ async fn get_logs_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<GetLogsParams>,
     Extension(user): Extension<User>,
-) -> Result<Json<Vec<JsonLog>>, String> {
+) -> Result<Json<Vec<JsonLog>>, (StatusCode, Json<JsonError>)> {
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(n) => n,
-        Err(e) => return Err(format!("{e}")),
+        Err(e) => {
+            let msg = format!("error getting system time: {:?}", e);
+            error!("{e}");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(JsonError { error: msg })));
+        }
     };
 
     let mut from_time: i64 = (now.as_nanos() as i64) - DAY_IN_NANO_SECONDS;
@@ -171,7 +200,11 @@ async fn get_logs_handler(
                     .collect(),
             ))
         }
-        Err(e) => return Err(format!("{e}")),
+        Err(e) => {
+            let msg = format!("error encoding to base64: {:?}", e);
+            error!("{msg}");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(JsonError { error: msg })));
+        }
     }
 }
 
@@ -179,7 +212,7 @@ async fn post_logs_handler(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<User>,
     Json(logs): Json<Vec<JsonLog>>,
-) -> (StatusCode, String) {
+) -> Result<Json<JsonMessage>, (StatusCode, Json<JsonError>)> {
     let count = logs.len();
     let log_owner_ids: Vec<String> = vec![user.id; count];
     let mut logs_timestamps: Vec<i64> = Vec::with_capacity(count);
@@ -188,7 +221,11 @@ async fn post_logs_handler(
     for log in logs {
         let payload = match BASE64_STANDARD.decode(log.payload) {
             Ok(payload) => payload,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
+            Err(e) => {
+                let msg = format!("couldn't decode base64 payload: {:?}", e);
+                error!("{msg}");
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(JsonError { error: msg })));
+            }
         };
 
         logs_timestamps.push(log.time);
@@ -202,8 +239,10 @@ async fn post_logs_handler(
     .bind(&logs_timestamps[..])
     .bind(&logs_payloads[..])
     .execute(&state.db_pool).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")); 
+        let msg = format!("{e}");
+        error!("{msg}");
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(JsonError { error: msg }))); 
     };
 
-    return (StatusCode::OK, format!("success"));
+    return Ok(Json(JsonMessage { message: "success".to_string() }));
 }
