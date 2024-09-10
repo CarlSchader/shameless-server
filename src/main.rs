@@ -158,10 +158,13 @@ async fn auth_middleware(
 
 #[derive(Deserialize, Debug)]
 struct GetLogsParams {
-    from: Option<i64>, // timestamp to retrieve
+    limit: Option<u64>,
+    offset: Option<u64>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
 }
 
-const DAY_IN_NANO_SECONDS: i64 = 1000 * 1000 * 60 * 60 * 24;
+//const DAY_IN_NANO_SECONDS: i64 = 1000 * 1000 * 60 * 60 * 24;
 
 async fn get_logs_handler(
     State(state): State<Arc<AppState>>,
@@ -177,16 +180,19 @@ async fn get_logs_handler(
         }
     };
 
-    let mut from_time: i64 = (now.as_nanos() as i64) - DAY_IN_NANO_SECONDS;
-    if let Some(from) = params.from {
-        from_time = from;
-    }
+    let limit = params.limit.unwrap_or(256);
+    let offset = params.offset.unwrap_or(0);
+    let start_time = params.start_time.unwrap_or(0);
+    let end_time = params.end_time.unwrap_or(now.as_nanos() as i64);
 
     match sqlx::query_as::<_, SqlLog>(
-        "SELECT time, payload FROM logs WHERE owner_id = $1 AND time >= $2 ORDER BY time DESC;",
+        "SELECT time, payload FROM logs WHERE owner_id = $1 AND time >= $4 AND time <= $5 ORDER BY time DESC LIMIT $2 OFFSET $3;",
     )
     .bind(user.id)
-    .bind(from_time)
+    .bind(limit as i64)
+    .bind(offset as i64)
+    .bind(start_time)
+    .bind(end_time)
     .fetch_all(&state.db_pool)
     .await
     {
