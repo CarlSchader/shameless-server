@@ -1,0 +1,2 @@
+## Todo
+- The auth middleware doesn't check for expired tokens
