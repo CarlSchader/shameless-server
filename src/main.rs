@@ -8,16 +8,14 @@ use axum::{
 };
 
 use hmac::{Hmac, Mac};
-use jwt::{Header, Token, VerifyWithKey};
+use jwt::{header::{HeaderContentType, HeaderType}, AlgorithmType, JoseHeader, Token, VerifyWithKey};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 
 use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::Arc, time::{SystemTime, UNIX_EPOCH}
 };
 
 use base64::{prelude::BASE64_STANDARD, Engine};
@@ -94,6 +92,50 @@ struct User {
     id: String,
 }
 
+#[derive(Default, Debug, PartialEq, Serialize, Deserialize)]
+struct JwtExpirationHeader {
+    #[serde(rename = "alg")]
+    algorithm: AlgorithmType,
+
+    #[serde(rename = "kid", skip_serializing_if = "Option::is_none")]
+    key_id: Option<String>,
+
+    #[serde(rename = "typ", skip_serializing_if = "Option::is_none")]
+    type_: Option<HeaderType>,
+
+    #[serde(rename = "cty", skip_serializing_if = "Option::is_none")]
+    content_type: Option<HeaderContentType>,
+
+    #[serde(rename = "iat", skip_serializing_if = "Option::is_none")]
+    issued_at: Option<u64>,
+
+    #[serde(rename = "exp")]
+    expiration: u64,
+}
+
+impl JoseHeader for JwtExpirationHeader {
+    fn algorithm_type(&self) -> AlgorithmType {
+        self.algorithm
+    }
+
+    fn key_id(&self) -> Option<&str> {
+        self.key_id.as_deref()
+    }
+
+    fn type_(&self) -> Option<HeaderType> {
+        self.type_
+    }
+
+    fn content_type(&self) -> Option<HeaderContentType> {
+        self.content_type
+    }}
+
+
+#[derive(Deserialize, Debug)]
+struct JwtClaims {
+    sub: String
+}
+
 async fn auth_middleware(
     state: State<Arc<AppState>>,
     mut req: Request,
@@ -128,29 +170,38 @@ async fn auth_middleware(
     let jwt_string = &header_string[7..];
 
     // auth user
-    let token: Token<Header, BTreeMap<String, String>, _> =
-        match jwt_string.verify_with_key(&state.auth_secret_key) {
-            Ok(token) => token,
-            Err(e) => {
-                let error_string = format!("unable to verify auth token {}: {:?}", jwt_string, e);
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(JsonError { error: error_string })
-                ));
-            }
-        };
-
-    let _headers = token.header();
-    let claims = token.claims();
-
-    let Some(id) = claims.get("sub") else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(JsonError { error: "no sub claim in jwt".to_string() })
-        ));
+    let token: Token<JwtExpirationHeader, JwtClaims, _> = match jwt_string.verify_with_key(&state.auth_secret_key) {
+        Ok(token) => token,
+        Err(e) => return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(JsonError { error: format!("unable to verify auth token {}: {:?}", jwt_string, e) })
+        ))
     };
 
-    let user = User { id: id.to_string() };
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(n) => n.as_secs(),
+        Err(e) => {
+            let error_string = format!("unable to get system time since unix epoch {:?}", e);
+            error!("{error_string}");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR, 
+                Json(JsonError { error: error_string }) 
+            ))
+        }
+    };
+
+    let headers = token.header();
+
+    if headers.expiration <= now {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(JsonError { error: "auth token is expired".to_string() })
+        ));
+    }
+
+    let claims = token.claims();
+
+    let user = User { id: claims.sub.clone() };
 
     req.extensions_mut().insert(user);
     Ok(next.run(req).await)
