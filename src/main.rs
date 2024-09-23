@@ -33,12 +33,14 @@ struct JsonMessage {
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonLog {
     time: i64,
+    tag: String,
     payload: String, // base64 encoded string
 }
 
 #[derive(sqlx::FromRow)]
 struct SqlLog {
     time: i64,
+    tag: String,
     payload: Vec<u8>,
 }
 
@@ -237,7 +239,7 @@ async fn get_logs_handler(
     let end_time = params.end_time.unwrap_or(now.as_nanos() as i64);
 
     match sqlx::query_as::<_, SqlLog>(
-        "SELECT time, payload FROM logs WHERE owner_id = $1 AND time >= $4 AND time <= $5 ORDER BY time DESC LIMIT $2 OFFSET $3;",
+        "SELECT time, tag, payload FROM logs WHERE owner_id = $1 AND time >= $4 AND time <= $5 ORDER BY time DESC LIMIT $2 OFFSET $3;",
     )
     .bind(user.id)
     .bind(limit as i64)
@@ -252,6 +254,7 @@ async fn get_logs_handler(
                 rows.iter()
                     .map(|row| JsonLog {
                         time: row.time,
+                        tag: row.tag.clone(),
                         payload: BASE64_STANDARD.encode(&row.payload[..]),
                     })
                     .collect(),
@@ -274,6 +277,7 @@ async fn post_logs_handler(
     let log_owner_ids: Vec<String> = vec![user.id; count];
     let mut logs_timestamps: Vec<i64> = Vec::with_capacity(count);
     let mut logs_payloads: Vec<Vec<u8>> = Vec::with_capacity(count);
+    let mut logs_tags: Vec<String> = Vec::with_capacity(count);
 
     for log in logs {
         let payload = match BASE64_STANDARD.decode(log.payload) {
@@ -287,14 +291,16 @@ async fn post_logs_handler(
 
         logs_timestamps.push(log.time);
         logs_payloads.push(payload);
+        logs_tags.push(log.tag)
     }
 
     if let Err(e) = sqlx::query(
-        "INSERT INTO logs(owner_id, time, payload) SELECT * FROM UNNEST($1::text[], $2::bigint[], $3::bytea[])",
+        "INSERT INTO logs(owner_id, time, payload, tag) SELECT * FROM UNNEST($1::text[], $2::bigint[], $3::bytea[], $4::text[])",
     )
     .bind(&log_owner_ids[..])
     .bind(&logs_timestamps[..])
     .bind(&logs_payloads[..])
+    .bind(&logs_tags[..])
     .execute(&state.db_pool).await {
         let msg = format!("{e}");
         error!("{msg}");
