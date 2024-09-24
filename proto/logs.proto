@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+service LogsService {
+  rpc GetLogs(Logs) returns (Logs) {}
+  rpc PostLogs(Logs) returns (Void) {}
+}
+
+message Log {
+  int64 time = 1;
+  string tag = 2;
+  bytes payload = 3;
+}
+
+message Logs {
+  repeated Log logs = 1;
+}
+
+message Void {}
