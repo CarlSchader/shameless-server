@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+// this is the name included in the include_proto! macro
+package shameless;
+
+service ShamelessService {
+  rpc GetLogs(GetLogsRequest) returns (Logs) {}
+  rpc PostLogs(Logs) returns (Void) {}
+}
+
+message GetLogsRequest {
+  optional uint64 limit = 1;
+  optional uint64 offset = 2;
+  optional int64 start_time = 3;
+  optional int64 end_time = 4;
+}
+
+message Log {
+  int64 time = 1;
+  string tag = 2;
+  bytes payload = 3;
+}
+
+message Logs {
+  repeated Log logs = 1;
+}
+
+message Void {}
