@@ -5,7 +5,7 @@ use log::error;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use shameless::shameless_service_server::{ShamelessService, ShamelessServiceServer};
-use shameless::{GetLogsRequest, Logs, Void};
+use shameless::{GetLogsRequest, Log, Logs, Void};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
 use tonic::transport::Server;
@@ -56,7 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let svc = ShamelessServiceServer::new(shameless_grpc_service);
 
-    Server::builder().add_service(svc).serve("[::1]:8000".parse().unwrap()).await?;
+    Server::builder()
+        .add_service(svc).serve("0.0.0.0:8000".parse().unwrap()).await?;
 
     Ok(())
 }
@@ -114,7 +115,7 @@ struct User {
 }
 
 
-async fn validate_user<T>(
+fn validate_user<T>(
     req: &Request<T>,
     auth_secret_key: &Hmac<Sha256>,
 ) -> Result<User, Status> {
@@ -163,21 +164,104 @@ async fn validate_user<T>(
     let claims = token.claims();
 
     let user = User { id: claims.sub.clone() };
-
-    req.extensions_mut().insert(user);
-    Ok(next.run(req).await)
+    
+    Ok(user)
 }
 
+
+#[derive(sqlx::FromRow)]
+struct SqlLog {
+    time: i64,
+    tag: String,
+    payload: Vec<u8>,
+}
 
 
 #[tonic::async_trait]
 impl ShamelessService for ShamelessGrpcService {
-    async fn get_logs(&self, _request: Request<GetLogsRequest>) -> Result<Response<Logs>, Status> {
-        unimplemented!()
+    async fn get_logs(&self, req: Request<GetLogsRequest>) -> Result<Response<Logs>, Status> {
+        let user = match validate_user(&req, &self.state.auth_secret_key) {
+            Ok(u) => u,
+            Err(e) => return Err(e),
+        };
+
+        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(n) => n,
+            Err(e) => {
+                let msg = format!("error getting system time: {:?}", e);
+                error!("{e}");
+                return Err(Status::invalid_argument(msg));
+            }
+        };
+
+        let get_logs_req = req.get_ref();
+
+        let limit = get_logs_req .limit.unwrap_or(256);
+        let offset = get_logs_req.offset.unwrap_or(0);
+        let start_time = get_logs_req.start_time.unwrap_or(0);
+        let end_time = get_logs_req.end_time.unwrap_or(now.as_nanos() as i64);
+
+        let logs_vec: Vec<Log> = match sqlx::query_as::<_, SqlLog>(
+            "SELECT time, tag, payload FROM logs WHERE owner_id = $1 AND time >= $4 AND time <= $5 ORDER BY time DESC LIMIT $2 OFFSET $3;",
+        )
+        .bind(user.id)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .bind(start_time)
+        .bind(end_time)
+        .fetch_all(&self.state.db_pool)
+        .await
+        {
+            Ok(rows) => rows.iter()
+                .map(|row| Log {
+                    time: row.time,
+                    tag: row.tag.clone(),
+                    payload: row.payload.clone(),
+                })
+                .collect(),
+            Err(e) => {
+                let msg = format!("error deserializing logs from sql: {:?}", e);
+                error!("{msg}");
+                return Err(Status::invalid_argument(msg));
+            }
+        };
+       
+        Ok(Response::new(Logs { logs: logs_vec }))
     } 
 
-    async fn post_logs(&self, _request: Request<Logs>) -> Result<Response<Void>, Status> {
-        unimplemented!()
+    async fn post_logs(&self, req: Request<Logs>) -> Result<Response<Void>, Status> {
+        let user = match validate_user(&req, &self.state.auth_secret_key) {
+            Ok(u) => u,
+            Err(e) => return Err(e),
+        };
+
+        let logs_ref = req.get_ref();
+        let count = logs_ref.logs.len();
+        let log_owner_ids: Vec<String> = vec![user.id; count];
+        let mut logs_timestamps: Vec<i64> = Vec::with_capacity(count);
+        let mut logs_payloads: Vec<Vec<u8>> = Vec::with_capacity(count);
+        let mut logs_tags: Vec<String> = Vec::with_capacity(count);
+
+        for log in &logs_ref.logs[..] {
+            logs_timestamps.push(log.time);
+            logs_payloads.push(log.payload.clone());
+            logs_tags.push(log.tag.clone())
+        }
+
+        if let Err(e) = sqlx::query(
+            "INSERT INTO logs(owner_id, time, payload, tag) SELECT * FROM UNNEST($1::text[], $2::bigint[], $3::bytea[], $4::text[])",
+        )
+        .bind(&log_owner_ids[..])
+        .bind(&logs_timestamps[..])
+        .bind(&logs_payloads[..])
+        .bind(&logs_tags[..])
+        .execute(&self.state.db_pool).await {
+            let msg = format!("{e}");
+            error!("{msg}");
+            return Err(Status::internal(msg)); 
+        };
+
+        Ok(Response::new(Void {}))
     }
 }
 
