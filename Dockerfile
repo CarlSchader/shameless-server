@@ -4,6 +4,7 @@ FROM rust:1-alpine3.19
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 # if needed, add additional dependencies here
 RUN apk add --no-cache musl-dev openssl-dev
+RUN apk add protoc protobuf-dev
 # set the workdir and copy the source into it
 WORKDIR /app
 COPY ./ /app
