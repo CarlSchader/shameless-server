@@ -1,10 +1,9 @@
 # Start with a rust alpine image
-FROM rust:1-alpine3.19
+FROM rust:alpine
 # This is important, see https://github.com/rust-lang/docker-rust/issues/85
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 # if needed, add additional dependencies here
-RUN apk add --no-cache musl-dev openssl-dev
-RUN apk add protoc protobuf-dev
+RUN apk add --no-cache musl-dev openssl-dev protoc protobuf-dev
 # set the workdir and copy the source into it
 WORKDIR /app
 COPY ./ /app
