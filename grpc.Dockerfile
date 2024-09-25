@@ -9,14 +9,14 @@ RUN apk add protoc protobuf-dev
 WORKDIR /app
 COPY ./ /app
 # do a release build
-RUN cargo build --release
-RUN strip target/release/server
+RUN cargo build --release --bin grpc_server
+RUN strip target/release/grpc_server
 
 # use a plain alpine image, the alpine version needs to match the builder
 FROM alpine:3.19
 # if needed, install additional dependencies here
 RUN apk add --no-cache libgcc
 # copy the binary into the final image
-COPY --from=0 /app/target/release/server .
+COPY --from=0 /app/target/release/grpc_server .
 # set the binary as entrypoint
-ENTRYPOINT ["/server"]
+ENTRYPOINT ["/grpc_server"]
