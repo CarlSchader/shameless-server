@@ -12,7 +12,7 @@ RUN cargo build --release --bin grpc_server
 RUN strip target/release/grpc_server
 
 # use a plain alpine image, the alpine version needs to match the builder
-FROM alpine:3.19
+FROM alpine
 # if needed, install additional dependencies here
 RUN apk add --no-cache libgcc
 # copy the binary into the final image
